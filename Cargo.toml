@@ -1,0 +1,8 @@
+[package]
+name = "pitch_shifter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+portmidi = "0.3"
+sdl2 = "0.37"
