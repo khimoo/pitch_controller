@@ -1,9 +1,11 @@
 extern crate portmidi as pm;
+extern crate sdl2;
 
 use pm::MidiMessage;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::sync::mpsc;
 
 static CHANNEL: u8 = 0;
 static MELODY: [(u8, u32); 42] = [
@@ -60,29 +62,41 @@ fn main() {
     let v_in = context.create_virtual_input("Virt In 1").unwrap();
     let v_out = context.create_virtual_output("Virt Out 1").unwrap();
 
+    // Create a channel for sending controller events to the MIDI thread
+    let (tx, rx) = mpsc::channel();
+
+    // Start MIDI output thread
     let con2 = Arc::clone(&context);
     thread::spawn(move || {
         let out_port = con2
             .output_port(con2.device(v_out.id()).unwrap(), 1024)
             .unwrap();
+        
         println!("Playing... Connect Virt Out 1 to Virt In 1 to see midi messages on screen...");
         println!("(Note: Windows not supported: midi devices do have to be implemented drivers)");
         println!("Press Crtl-C to abort...");
-        play(out_port, true);
+        
+        // Handle controller events for MIDI output
+        handle_controller_midi(out_port, rx);
     });
 
-    let in_port = context
-        .input_port(context.device(v_in.id()).unwrap(), 1024)
-        .unwrap();
+    // Start MIDI input thread
+    let con3 = Arc::clone(&context);
+    thread::spawn(move || {
+        let in_port = con3
+            .input_port(con3.device(v_in.id()).unwrap(), 1024)
+            .unwrap();
 
-    while let Ok(_) = in_port.poll() {
-        if let Ok(Some(event)) = in_port.read_n(1024) {
-            println!("{:?}", event);
+        while let Ok(_) = in_port.poll() {
+            if let Ok(Some(event)) = in_port.read_n(1024) {
+                println!("{:?}", event);
+            }
+            thread::sleep(timeout);
         }
-        // there is no blocking receive method in PortMidi, therefore
-        // we have to sleep some time to prevent a busy-wait loop
-        thread::sleep(timeout);
-    }
+    });
+
+    // Start controller handling
+    start_controller(tx).expect("Failed to initialize controller");
 }
 
 fn play(mut out_port: pm::OutputPort, verbose: bool) -> pm::Result<()> {
@@ -151,4 +165,112 @@ fn play(mut out_port: pm::OutputPort, verbose: bool) -> pm::Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     Ok(())
+}
+
+// New function to handle controller input
+fn start_controller(tx: mpsc::Sender<ControllerEvent>) -> Result<(), String> {
+    // Required for certain controllers to work on Windows
+    sdl2::hint::set("SDL_JOYSTICK_THREAD", "1");
+
+    let sdl_context = sdl2::init()?;
+    let game_controller_subsystem = sdl_context.game_controller()?;
+
+    let available = game_controller_subsystem
+        .num_joysticks()
+        .map_err(|e| format!("can't enumerate joysticks: {}", e))?;
+
+    println!("{} joysticks available", available);
+
+    // Find and open the first available game controller
+    let controller = (0..available)
+        .find_map(|id| {
+            if !game_controller_subsystem.is_game_controller(id) {
+                println!("{} is not a game controller", id);
+                return None;
+            }
+
+            println!("Attempting to open controller {}", id);
+
+            match game_controller_subsystem.open(id) {
+                Ok(c) => {
+                    println!("Success: opened \"{}\"", c.name());
+                    Some(c)
+                }
+                Err(e) => {
+                    println!("failed: {:?}", e);
+                    None
+                }
+            }
+        });
+    
+    // If no controller is found, return
+    let controller = match controller {
+        Some(c) => c,
+        None => {
+            println!("No controller found, MIDI will still play without controller input");
+            return Ok(());
+        }
+    };
+
+    println!("Controller mapping: {}", controller.mapping());
+    println!("Press A button to play MIDI notes");
+
+    // Main event loop
+    for event in sdl_context.event_pump()?.wait_iter() {
+        use sdl2::controller::Button;
+        use sdl2::event::Event;
+
+        match event {
+            Event::ControllerButtonDown { button: Button::A, .. } => {
+                println!("A Button pressed - sending MIDI note on");
+                tx.send(ControllerEvent::ButtonDown).expect("Failed to send event");
+            }
+            Event::ControllerButtonUp { button: Button::A, .. } => {
+                println!("A Button released - sending MIDI note off");
+                tx.send(ControllerEvent::ButtonUp).expect("Failed to send event");
+            }
+            Event::Quit { .. } => break,
+            _ => (),
+        }
+    }
+
+    Ok(())
+}
+
+// Controller event enum
+enum ControllerEvent {
+    ButtonDown,
+    ButtonUp,
+}
+
+// Function to handle MIDI output based on controller events
+fn handle_controller_midi(mut out_port: pm::OutputPort, rx: mpsc::Receiver<ControllerEvent>) {
+    const NOTE: u8 = 60; // Middle C
+    const VELOCITY: u8 = 100;
+    
+    loop {
+        match rx.recv() {
+            Ok(ControllerEvent::ButtonDown) => {
+                let note_on = MidiMessage {
+                    status: 0x90 + CHANNEL,
+                    data1: NOTE,
+                    data2: VELOCITY,
+                    data3: 0,
+                };
+                println!("Note On: {:?}", note_on);
+                let _ = out_port.write_message(note_on);
+            },
+            Ok(ControllerEvent::ButtonUp) => {
+                let note_off = MidiMessage {
+                    status: 0x80 + CHANNEL,
+                    data1: NOTE,
+                    data2: VELOCITY,
+                    data3: 0,
+                };
+                println!("Note Off: {:?}", note_off);
+                let _ = out_port.write_message(note_off);
+            },
+            Err(_) => break,
+        }
+    }
 }
