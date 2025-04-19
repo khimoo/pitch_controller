@@ -1,8 +1,15 @@
 extern crate sdl2;
 
-pub fn controller() -> Result<(), String> {
-    // This is required for certain controllers to work on Windows without the
-    // video subsystem enabled:
+use std::sync::mpsc;
+
+pub enum ControllerEvent {
+    ButtonDown,
+    ButtonUp,
+    PitchBend(u16),
+}
+
+pub fn start_controller(tx: mpsc::Sender<ControllerEvent>) -> Result<(), String> {
+    // Required for certain controllers to work on Windows
     sdl2::hint::set("SDL_JOYSTICK_THREAD", "1");
 
     let sdl_context = sdl2::init()?;
@@ -14,8 +21,8 @@ pub fn controller() -> Result<(), String> {
 
     println!("{} joysticks available", available);
 
-    // Iterate over all available joysticks and look for game controllers.
-    let mut controller = (0..available)
+    // Find and open the first available game controller
+    let controller = (0..available)
         .find_map(|id| {
             if !game_controller_subsystem.is_game_controller(id) {
                 println!("{} is not a game controller", id);
@@ -26,8 +33,6 @@ pub fn controller() -> Result<(), String> {
 
             match game_controller_subsystem.open(id) {
                 Ok(c) => {
-                    // We managed to find and open a game controller,
-                    // exit the loop
                     println!("Success: opened \"{}\"", c.name());
                     Some(c)
                 }
@@ -36,82 +41,42 @@ pub fn controller() -> Result<(), String> {
                     None
                 }
             }
-        })
-        .expect("Couldn't open any controller");
+        });
+    
+    // If no controller is found, return
+    let controller = match controller {
+        Some(c) => c,
+        None => {
+            println!("No controller found, MIDI will still play without controller input");
+            return Ok(());
+        }
+    };
 
     println!("Controller mapping: {}", controller.mapping());
+    println!("Press A button to play MIDI notes");
+    println!("Use left stick up/down to control pitch bend");
 
-    let (mut lo_freq, mut hi_freq) = (0, 0);
-
+    // Main event loop
     for event in sdl_context.event_pump()?.wait_iter() {
+        use sdl2::controller::Button;
         use sdl2::controller::Axis;
         use sdl2::event::Event;
 
         match event {
-            Event::ControllerAxisMotion {
-                axis: Axis::TriggerLeft,
-                value: val,
-                ..
-            } => {
-                // Trigger axes go from 0 to 32767, so this should be okay
-                lo_freq = (val as u16) * 2;
-                match controller.set_rumble(lo_freq, hi_freq, 15000) {
-                    Ok(()) => println!("Set rumble to ({}, {})", lo_freq, hi_freq),
-                    Err(e) => println!(
-                        "Error setting rumble to ({}, {}): {:?}",
-                        lo_freq, hi_freq, e
-                    ),
-                }
+            Event::ControllerButtonDown { button: Button::A, .. } => {
+                println!("A Button pressed - sending MIDI note on");
+                tx.send(ControllerEvent::ButtonDown).expect("Failed to send event");
             }
-            Event::ControllerAxisMotion {
-                axis: Axis::TriggerRight,
-                value: val,
-                ..
-            } => {
-                // Trigger axes go from 0 to 32767, so this should be okay
-                hi_freq = (val as u16) * 2;
-                match controller.set_rumble(lo_freq, hi_freq, 15000) {
-                    Ok(()) => println!("Set rumble to ({}, {})", lo_freq, hi_freq),
-                    Err(e) => println!(
-                        "Error setting rumble to ({}, {}): {:?}",
-                        lo_freq, hi_freq, e
-                    ),
-                }
+            Event::ControllerButtonUp { button: Button::A, .. } => {
+                println!("A Button released - sending MIDI note off");
+                tx.send(ControllerEvent::ButtonUp).expect("Failed to send event");
             }
-            Event::ControllerAxisMotion {
-                axis, value: val, ..
-            } => {
-                // Axis motion is an absolute value in the range
-                // [-32768, 32767]. Let's simulate a very rough dead
-                // zone to ignore spurious events.
-                let dead_zone = 10_000;
-                if val > dead_zone || val < -dead_zone {
-                    println!("Axis {:?} moved to {}", axis, val);
-                }
+            Event::ControllerAxisMotion { axis: Axis::LeftY, value, .. } => {
+                let value = -(value as i32); // i16 -> i32 にしてから符号反転
+                let clamped = value.clamp(-32768, 32767); // 念のため範囲を保証
+                let pitch_bend_value = ((clamped as f32 / 4.0) + 8192.0).clamp(0.0, 16383.0) as u16;
+                tx.send(ControllerEvent::PitchBend(pitch_bend_value)).expect("Failed to send pitch bend event");
             }
-            Event::ControllerButtonDown { button, .. } => println!("Button {:?} down", button),
-            Event::ControllerButtonUp { button, .. } => println!("Button {:?} up", button),
-            Event::ControllerTouchpadDown {
-                touchpad,
-                finger,
-                x,
-                y,
-                ..
-            } => println!("Touchpad {touchpad} down finger:{finger} x:{x} y:{y}"),
-            Event::ControllerTouchpadMotion {
-                touchpad,
-                finger,
-                x,
-                y,
-                ..
-            } => println!("Touchpad {touchpad} move finger:{finger} x:{x} y:{y}"),
-            Event::ControllerTouchpadUp {
-                touchpad,
-                finger,
-                x,
-                y,
-                ..
-            } => println!("Touchpad {touchpad} up   finger:{finger} x:{x} y:{y}"),
             Event::Quit { .. } => break,
             _ => (),
         }

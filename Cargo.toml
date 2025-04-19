@@ -4,5 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-portmidi = "0.3"
-sdl2 = "0.37"
+portmidi = "0.5.0"
+sdl2 = "0.35.2"
+
+[build-dependencies]
+sdl2 = "0.35.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

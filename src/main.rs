@@ -1,55 +1,13 @@
 extern crate portmidi as pm;
+use pitch_shifter::{ControllerEvent, start_controller};
 
 use pm::MidiMessage;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::sync::mpsc;
 
 static CHANNEL: u8 = 0;
-static MELODY: [(u8, u32); 42] = [
-    (60, 1),
-    (60, 1),
-    (67, 1),
-    (67, 1),
-    (69, 1),
-    (69, 1),
-    (67, 2),
-    (65, 1),
-    (65, 1),
-    (64, 1),
-    (64, 1),
-    (62, 1),
-    (62, 1),
-    (60, 2),
-    (67, 1),
-    (67, 1),
-    (65, 1),
-    (65, 1),
-    (64, 1),
-    (64, 1),
-    (62, 2),
-    (67, 1),
-    (67, 1),
-    (65, 1),
-    (65, 1),
-    (64, 1),
-    (64, 1),
-    (62, 2),
-    (60, 1),
-    (60, 1),
-    (67, 1),
-    (67, 1),
-    (69, 1),
-    (69, 1),
-    (67, 2),
-    (65, 1),
-    (65, 1),
-    (64, 1),
-    (64, 1),
-    (62, 1),
-    (62, 1),
-    (60, 2),
-];
 
 fn main() {
     // initialize the PortMidi context.
@@ -60,95 +18,85 @@ fn main() {
     let v_in = context.create_virtual_input("Virt In 1").unwrap();
     let v_out = context.create_virtual_output("Virt Out 1").unwrap();
 
+    // Create a channel for sending controller events to the MIDI thread
+    let (tx, rx) = mpsc::channel();
+
+    // Start MIDI output thread
     let con2 = Arc::clone(&context);
     thread::spawn(move || {
         let out_port = con2
             .output_port(con2.device(v_out.id()).unwrap(), 1024)
             .unwrap();
+        
         println!("Playing... Connect Virt Out 1 to Virt In 1 to see midi messages on screen...");
         println!("(Note: Windows not supported: midi devices do have to be implemented drivers)");
         println!("Press Crtl-C to abort...");
-        play(out_port, true);
+        
+        // Handle controller events for MIDI output
+        handle_controller_midi(out_port, rx);
     });
 
-    let in_port = context
-        .input_port(context.device(v_in.id()).unwrap(), 1024)
-        .unwrap();
+    // Start MIDI input thread
+    let con3 = Arc::clone(&context);
+    thread::spawn(move || {
+        let in_port = con3
+            .input_port(con3.device(v_in.id()).unwrap(), 1024)
+            .unwrap();
 
-    while let Ok(_) = in_port.poll() {
-        if let Ok(Some(event)) = in_port.read_n(1024) {
-            println!("{:?}", event);
+        while let Ok(_) = in_port.poll() {
+            if let Ok(Some(event)) = in_port.read_n(1024) {
+                println!("{:?}", event);
+            }
+            thread::sleep(timeout);
         }
-        // there is no blocking receive method in PortMidi, therefore
-        // we have to sleep some time to prevent a busy-wait loop
-        thread::sleep(timeout);
-    }
+    });
+
+    // Start controller handling
+    start_controller(tx).expect("Failed to initialize controller");
 }
 
-fn play(mut out_port: pm::OutputPort, verbose: bool) -> pm::Result<()> {
-    for &(note, dur) in MELODY.iter().cycle() {
-        let note_on = MidiMessage {
-            status: 0x90 + CHANNEL,
-            data1: note,
-            data2: 100,
-            data3: 0,
-        };
-        if verbose {
-            println!("Note On: {:?}", note_on);
+// Function to handle MIDI output based on controller events
+fn handle_controller_midi(mut out_port: pm::OutputPort, rx: mpsc::Receiver<ControllerEvent>) {
+    const NOTE: u8 = 60; // Middle C
+    const VELOCITY: u8 = 100;
+    
+    loop {
+        match rx.recv() {
+            Ok(ControllerEvent::ButtonDown) => {
+                let note_on = MidiMessage {
+                    status: 0x90 + CHANNEL,
+                    data1: NOTE,
+                    data2: VELOCITY,
+                    data3: 0,
+                };
+                println!("Note On: {:?}", note_on);
+                let _ = out_port.write_message(note_on);
+            },
+            Ok(ControllerEvent::ButtonUp) => {
+                let note_off = MidiMessage {
+                    status: 0x80 + CHANNEL,
+                    data1: NOTE,
+                    data2: VELOCITY,
+                    data3: 0,
+                };
+                println!("Note Off: {:?}", note_off);
+                let _ = out_port.write_message(note_off);
+            },
+            Ok(ControllerEvent::PitchBend(value)) => {
+                // ピッチベンドの値をMIDIメッセージに変換
+                let lsb = (value & 0x7F) as u8; // 下位7ビット
+                let msb = ((value >> 7) & 0x7F) as u8; // 上位7ビット
+                
+                let pitch_bend = MidiMessage {
+                    status: 0xE0 + CHANNEL, // ピッチベンドメッセージ
+                    data1: lsb,
+                    data2: msb,
+                    data3: 0,
+                };
+                println!("Pitch Bend: {:?}", pitch_bend);
+                let _ = out_port.write_message(pitch_bend);
+            },
+            Err(_) => break,
         }
-        out_port.write_message(note_on)?;
-
-        // note hold time before sending pitch bend
-        thread::sleep(Duration::from_millis(dur as u64 * 400));
-
-        // ピッチベンドの値を設定 (0x2000 が中央位置)
-        let pitch_bend_value: u16 = 0x3000;
-        let lsb = (pitch_bend_value & 0x7F) as u8; // LSB
-        let msb = ((pitch_bend_value >> 7) & 0x7F) as u8; // MSB
-
-        let pitch_wheel = MidiMessage {
-            status: 0xE0 + CHANNEL,
-            data1: lsb,
-            data2: msb,
-            data3: 0,
-        };
-        if verbose {
-            println!("Pitch Bend: {:?}", pitch_wheel);
-        }
-        out_port.write_message(pitch_wheel)?;
-
-        thread::sleep(Duration::from_millis(dur as u64 * 200));
-
-        // ピッチベンドの値をもとにもどす
-        let pitch_bend_value: u16 = 0x2000;
-        let lsb = (pitch_bend_value & 0x7F) as u8; // LSB
-        let msb = ((pitch_bend_value >> 7) & 0x7F) as u8; // MSB
-
-        let pitch_wheel = MidiMessage {
-            status: 0xE0 + CHANNEL,
-            data1: lsb,
-            data2: msb,
-            data3: 0,
-        };
-        if verbose {
-            println!("Pitch Bend: {:?}", pitch_wheel);
-        }
-        out_port.write_message(pitch_wheel)?;
-
-
-        let note_off = MidiMessage {
-            status: 0x80 + CHANNEL,
-            data1: note,
-            data2: 100,
-            data3: 0,
-        };
-        if verbose {
-            println!("Note Off: {:?}", note_off);
-        }
-        out_port.write_message(note_off)?;
-
-        // short pause
-        thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
 }
