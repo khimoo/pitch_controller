@@ -1,4 +1,4 @@
-# Pitch Shifter
+# Pitch Bender with Game Gontroller
 
 A MIDI controller application that allows you to control pitch bend using a game controller. Press the A button to play notes and use the left stick to control pitch bend.
 
