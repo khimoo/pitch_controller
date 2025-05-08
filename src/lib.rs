@@ -42,7 +42,7 @@ pub fn start_controller(tx: mpsc::Sender<ControllerEvent>) -> Result<(), String>
                 }
             }
         });
-    
+
     // If no controller is found, return
     let controller = match controller {
         Some(c) => c,
@@ -53,7 +53,7 @@ pub fn start_controller(tx: mpsc::Sender<ControllerEvent>) -> Result<(), String>
     };
 
     println!("Controller mapping: {}", controller.mapping());
-    println!("Press A button to play MIDI notes");
+    println!("Press A button to play MIDI note");
     println!("Use left stick up/down to control pitch bend");
 
     // Main event loop
@@ -72,9 +72,7 @@ pub fn start_controller(tx: mpsc::Sender<ControllerEvent>) -> Result<(), String>
                 tx.send(ControllerEvent::ButtonUp).expect("Failed to send event");
             }
             Event::ControllerAxisMotion { axis: Axis::LeftY, value, .. } => {
-                let value = -(value as i32); // i16 -> i32 にしてから符号反転
-                let clamped = value.clamp(-32768, 32767); // 念のため範囲を保証
-                let pitch_bend_value = ((clamped as f32 / 4.0) + 8192.0).clamp(0.0, 16383.0) as u16;
+                let pitch_bend_value = ((-(value) / 4) + 8192).clamp(0, 16383) as u16; // valueはもともとi16
                 tx.send(ControllerEvent::PitchBend(pitch_bend_value)).expect("Failed to send pitch bend event");
             }
             Event::Quit { .. } => break,

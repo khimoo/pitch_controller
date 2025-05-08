@@ -27,11 +27,10 @@ fn main() {
         let out_port = con2
             .output_port(con2.device(v_out.id()).unwrap(), 1024)
             .unwrap();
-        
+
         println!("Playing... Connect Virt Out 1 to Virt In 1 to see midi messages on screen...");
-        println!("(Note: Windows not supported: midi devices do have to be implemented drivers)");
         println!("Press Crtl-C to abort...");
-        
+
         // Handle controller events for MIDI output
         handle_controller_midi(out_port, rx);
     });
@@ -59,7 +58,7 @@ fn main() {
 fn handle_controller_midi(mut out_port: pm::OutputPort, rx: mpsc::Receiver<ControllerEvent>) {
     const NOTE: u8 = 60; // Middle C
     const VELOCITY: u8 = 100;
-    
+
     loop {
         match rx.recv() {
             Ok(ControllerEvent::ButtonDown) => {
@@ -83,14 +82,10 @@ fn handle_controller_midi(mut out_port: pm::OutputPort, rx: mpsc::Receiver<Contr
                 let _ = out_port.write_message(note_off);
             },
             Ok(ControllerEvent::PitchBend(value)) => {
-                // ピッチベンドの値をMIDIメッセージに変換
-                let lsb = (value & 0x7F) as u8; // 下位7ビット
-                let msb = ((value >> 7) & 0x7F) as u8; // 上位7ビット
-                
                 let pitch_bend = MidiMessage {
-                    status: 0xE0 + CHANNEL, // ピッチベンドメッセージ
-                    data1: lsb,
-                    data2: msb,
+                    status: 0xE0 + CHANNEL,
+                    data1: (value & 0x7F) as u8, // 上7bit
+                    data2: ((value >> 7) & 0x7F) as u8, // 下7bit
                     data3: 0,
                 };
                 println!("Pitch Bend: {:?}", pitch_bend);
