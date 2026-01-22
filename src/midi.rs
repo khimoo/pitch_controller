@@ -84,6 +84,11 @@ fn handle_controller_midi(
                 println!("Pitch Bend: {:?}", pitch_bend);
                 let _ = out_port.write_message(pitch_bend);
             }
+            Ok(ControllerEvent::RawButton { .. })
+            | Ok(ControllerEvent::RawAxis { .. })
+            | Ok(ControllerEvent::ControllerInfo { .. }) => {
+                // MIDI worker ignores raw/UI-only events
+            }
             Err(_) => break,
         }
     }

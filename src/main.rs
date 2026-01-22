@@ -1,6 +1,7 @@
 extern crate portmidi as pm;
 
 use pitch_controller::{start_controller, ControllerApp, start_midi_worker, spawn_input_logger};
+use pitch_controller::controller::ControllerConfig;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -26,8 +27,9 @@ fn main() -> Result<(), eframe::Error> {
 
     // Controller thread (SDL2 loop). It only sends events to the GUI thread; the GUI forwards them to MIDI.
     let (controller_tx, controller_rx) = mpsc::channel();
+    let controller_config = ControllerConfig::default();
     thread::spawn(move || {
-        if let Err(e) = start_controller(controller_tx) {
+        if let Err(e) = start_controller(controller_tx, controller_config) {
             eprintln!("Controller thread error: {}", e);
         }
     });
