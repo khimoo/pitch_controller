@@ -1,5 +1,5 @@
 extern crate portmidi as pm;
-use pitch_shifter::{ControllerEvent, start_controller};
+use pitch_controller::{ControllerEvent, start_controller};
 
 use pm::MidiMessage;
 use std::sync::Arc;

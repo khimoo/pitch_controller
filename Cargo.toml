@@ -1,5 +1,5 @@
 [package]
-name = "pitch_shifter"
+name = "pitch_controller"
 version = "0.1.0"
 edition = "2021"
 
