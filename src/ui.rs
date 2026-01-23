@@ -229,7 +229,7 @@ impl eframe::App for ControllerApp {
                     .selected_text(src_label)
                     .show_ui(ui, |ui| {
                         for (idx, ep) in self.endpoints.iter().enumerate() {
-                            if !ep.can_write {
+                            if !ep.can_read {
                                 continue;
                             }
                             ui.selectable_value(&mut self.selected_src, Some(idx), &ep.name);
@@ -240,7 +240,7 @@ impl eframe::App for ControllerApp {
                     .selected_text(dst_label)
                     .show_ui(ui, |ui| {
                         for (idx, ep) in self.endpoints.iter().enumerate() {
-                            if !ep.can_read {
+                            if !ep.can_write {
                                 continue;
                             }
                             ui.selectable_value(&mut self.selected_dst, Some(idx), &ep.name);
@@ -250,18 +250,24 @@ impl eframe::App for ControllerApp {
 
             ui.horizontal(|ui| {
                 if ui.button("接続").clicked() {
-                    if let Some((src, dst)) = self.selected_pair() {
-                        match self.midi_graph.connect(&src, &dst) {
+                    match self.selected_pair() {
+                        Some((src, dst)) => match self.midi_graph.connect(&src, &dst) {
                             Ok(_) => self.status = Some("接続しました".to_string()),
                             Err(e) => self.status = Some(format!("接続に失敗しました: {}", e)),
+                        },
+                        None => {
+                            self.status = Some("送信元と送信先を選択してください".to_string());
                         }
                     }
                 }
                 if ui.button("切断").clicked() {
-                    if let Some((src, dst)) = self.selected_pair() {
-                        match self.midi_graph.disconnect(&src, &dst) {
+                    match self.selected_pair() {
+                        Some((src, dst)) => match self.midi_graph.disconnect(&src, &dst) {
                             Ok(_) => self.status = Some("切断しました".to_string()),
                             Err(e) => self.status = Some(format!("切断に失敗しました: {}", e)),
+                        },
+                        None => {
+                            self.status = Some("送信元と送信先を選択してください".to_string());
                         }
                     }
                 }

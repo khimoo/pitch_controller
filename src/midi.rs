@@ -1,6 +1,6 @@
 use crate::events::ControllerEvent;
 use portmidi as pm;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -10,6 +10,7 @@ const VELOCITY: u8 = 100;
 
 pub fn start_midi_worker(
     context: Arc<pm::PortMidi>,
+    input_device_id: Option<pm::PortMidiDeviceId>,
     output_device_id: pm::PortMidiDeviceId,
     rx: mpsc::Receiver<ControllerEvent>,
     channel: u8,
@@ -19,12 +20,16 @@ pub fn start_midi_worker(
             .output_port(context.device(output_device_id).unwrap(), 1024)
             .unwrap();
 
+        let mut in_port = input_device_id
+            .and_then(|id| context.device(id).ok())
+            .and_then(|dev| context.input_port(dev, 1024).ok());
+
         println!(
             "Playing... Connect Virt Out 1 to Virt In 1 to see midi messages on screen..."
         );
         println!("Press Ctrl-C to abort...");
 
-        handle_controller_midi(out_port, rx, channel);
+        handle_controller_and_passthrough(out_port, in_port.take(), rx, channel);
     })
 }
 
@@ -47,49 +52,80 @@ pub fn spawn_input_logger(
     })
 }
 
-fn handle_controller_midi(
+fn handle_controller_and_passthrough(
     mut out_port: pm::OutputPort,
+    mut in_port: Option<pm::InputPort>,
     rx: mpsc::Receiver<ControllerEvent>,
     channel: u8,
 ) {
+    const IDLE_SLEEP: Duration = Duration::from_millis(2);
+
     loop {
-        match rx.recv() {
-            Ok(ControllerEvent::ButtonDown) => {
-                let note_on = pm::MidiMessage {
-                    status: 0x90 + channel,
-                    data1: NOTE,
-                    data2: VELOCITY,
-                    data3: 0,
-                };
-                println!("Note On: {:?}", note_on);
-                let _ = out_port.write_message(note_on);
+        let mut idle = true;
+
+        if let Some(port) = in_port.as_mut() {
+            if let Ok(_) = port.poll() {
+                if let Ok(Some(events)) = port.read_n(1024) {
+                    idle = false;
+                    for event in events {
+                        println!("MIDI In: {:?}", event.message);
+                        let _ = out_port.write_message(event.message);
+                    }
+                }
             }
-            Ok(ControllerEvent::ButtonUp) => {
-                let note_off = pm::MidiMessage {
-                    status: 0x80 + channel,
-                    data1: NOTE,
-                    data2: VELOCITY,
-                    data3: 0,
-                };
-                println!("Note Off: {:?}", note_off);
-                let _ = out_port.write_message(note_off);
+        }
+
+        match rx.try_recv() {
+            Ok(event) => {
+                idle = false;
+                handle_controller_event(&mut out_port, event, channel);
             }
-            Ok(ControllerEvent::PitchBend(value)) => {
-                let pitch_bend = pm::MidiMessage {
-                    status: 0xE0 + channel,
-                    data1: (value & 0x7F) as u8,
-                    data2: ((value >> 7) & 0x7F) as u8,
-                    data3: 0,
-                };
-                println!("Pitch Bend: {:?}", pitch_bend);
-                let _ = out_port.write_message(pitch_bend);
-            }
-            Ok(ControllerEvent::RawButton { .. })
-            | Ok(ControllerEvent::RawAxis { .. })
-            | Ok(ControllerEvent::ControllerInfo { .. }) => {
-                // MIDI worker ignores raw/UI-only events
-            }
-            Err(_) => break,
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => break,
+        }
+
+        if idle {
+            thread::sleep(IDLE_SLEEP);
+        }
+    }
+}
+
+fn handle_controller_event(out_port: &mut pm::OutputPort, event: ControllerEvent, channel: u8) {
+    match event {
+        ControllerEvent::ButtonDown => {
+            let note_on = pm::MidiMessage {
+                status: 0x90 + channel,
+                data1: NOTE,
+                data2: VELOCITY,
+                data3: 0,
+            };
+            println!("Note On: {:?}", note_on);
+            let _ = out_port.write_message(note_on);
+        }
+        ControllerEvent::ButtonUp => {
+            let note_off = pm::MidiMessage {
+                status: 0x80 + channel,
+                data1: NOTE,
+                data2: VELOCITY,
+                data3: 0,
+            };
+            println!("Note Off: {:?}", note_off);
+            let _ = out_port.write_message(note_off);
+        }
+        ControllerEvent::PitchBend(value) => {
+            let pitch_bend = pm::MidiMessage {
+                status: 0xE0 + channel,
+                data1: (value & 0x7F) as u8,
+                data2: ((value >> 7) & 0x7F) as u8,
+                data3: 0,
+            };
+            println!("Pitch Bend: {:?}", pitch_bend);
+            let _ = out_port.write_message(pitch_bend);
+        }
+        ControllerEvent::RawButton { .. }
+        | ControllerEvent::RawAxis { .. }
+        | ControllerEvent::ControllerInfo { .. } => {
+            // MIDI worker ignores raw/UI-only events
         }
     }
 }
