@@ -7,6 +7,7 @@ edition = "2021"
 portmidi = "0.3.0"
 sdl2 = "0.35.2"
 eframe = { version = "0.26", features = ["wgpu"] }
+alsa = "0.7"
 
 [build-dependencies]
 sdl2 = "0.35.2"

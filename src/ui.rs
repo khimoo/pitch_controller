@@ -1,13 +1,18 @@
 use crate::events::ControllerEvent;
+use crate::midi_graph::{MidiEndpoint, MidiEndpointId, MidiGraph};
 use eframe::egui;
 use sdl2::controller::{Axis, Button};
 use std::collections::HashMap;
+use std::env;
+use std::fs;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct ControllerApp {
     controller_rx: mpsc::Receiver<ControllerEvent>,
     midi_tx: mpsc::Sender<ControllerEvent>,
+    midi_graph: Arc<MidiGraph>,
     last_pitch_bend: u16,
     last_tilt: f32,
     button_states: HashMap<Button, bool>,
@@ -17,16 +22,52 @@ pub struct ControllerApp {
     available_buttons: Vec<Button>,
     available_axes: Vec<Axis>,
     last_event_at: Option<Instant>,
+    endpoints: Vec<MidiEndpoint>,
+    selected_src: Option<usize>,
+    selected_dst: Option<usize>,
+    status: Option<String>,
+}
+
+fn configure_fonts(ctx: &egui::Context) {
+    let key = egui::Id::new("fonts_configured");
+    let already = ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(false));
+    if already {
+        return;
+    }
+
+    if let Ok(path) = env::var("PITCH_CONTROLLER_FONT") {
+        if let Ok(bytes) = fs::read(&path) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts
+                .font_data
+                .insert("ipafont".to_owned(), egui::FontData::from_owned(bytes));
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "ipafont".to_owned());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .insert(0, "ipafont".to_owned());
+            ctx.set_fonts(fonts);
+        }
+    }
+
+    ctx.data_mut(|d| d.insert_temp(key, true));
 }
 
 impl ControllerApp {
     pub fn new(
         controller_rx: mpsc::Receiver<ControllerEvent>,
         midi_tx: mpsc::Sender<ControllerEvent>,
+        midi_graph: Arc<MidiGraph>,
     ) -> Self {
         Self {
             controller_rx,
             midi_tx,
+            midi_graph,
             last_pitch_bend: 8192,
             last_tilt: 0.0,
             button_states: HashMap::new(),
@@ -36,7 +77,33 @@ impl ControllerApp {
             available_buttons: Vec::new(),
             available_axes: Vec::new(),
             last_event_at: None,
+            endpoints: Vec::new(),
+            selected_src: None,
+            selected_dst: None,
+            status: None,
         }
+    }
+
+    fn refresh_endpoints(&mut self) {
+        match self.midi_graph.list_endpoints() {
+            Ok(list) => {
+                self.endpoints = list;
+                self.selected_src = None;
+                self.selected_dst = None;
+                self.status = Some("端点一覧を更新しました".to_string());
+            }
+            Err(e) => {
+                self.status = Some(format!("端点の取得に失敗しました: {}", e));
+            }
+        }
+    }
+
+    fn selected_pair(&self) -> Option<(MidiEndpointId, MidiEndpointId)> {
+        let src_idx = self.selected_src?;
+        let dst_idx = self.selected_dst?;
+        let src = self.endpoints.get(src_idx)?;
+        let dst = self.endpoints.get(dst_idx)?;
+        Some((src.id.clone(), dst.id.clone()))
     }
 
     fn handle_event(&mut self, event: ControllerEvent) {
@@ -79,6 +146,7 @@ impl ControllerApp {
 
 impl eframe::App for ControllerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        configure_fonts(ctx);
         // Drain any pending controller events
         while let Ok(event) = self.controller_rx.try_recv() {
             self.handle_event(event);
@@ -137,6 +205,70 @@ impl eframe::App for ControllerApp {
                         ui.label(format!("raw: {}", raw));
                     });
                 }
+            }
+
+            ui.separator();
+            ui.heading("MIDI接続 (ALSA sequencer)");
+            if ui.button("端点を更新").clicked() {
+                self.refresh_endpoints();
+            }
+
+            let src_label = self
+                .selected_src
+                .and_then(|i| self.endpoints.get(i))
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "選択なし".to_string());
+            let dst_label = self
+                .selected_dst
+                .and_then(|i| self.endpoints.get(i))
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "選択なし".to_string());
+
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_label("送信元")
+                    .selected_text(src_label)
+                    .show_ui(ui, |ui| {
+                        for (idx, ep) in self.endpoints.iter().enumerate() {
+                            if !ep.can_write {
+                                continue;
+                            }
+                            ui.selectable_value(&mut self.selected_src, Some(idx), &ep.name);
+                        }
+                    });
+
+                egui::ComboBox::from_label("送信先")
+                    .selected_text(dst_label)
+                    .show_ui(ui, |ui| {
+                        for (idx, ep) in self.endpoints.iter().enumerate() {
+                            if !ep.can_read {
+                                continue;
+                            }
+                            ui.selectable_value(&mut self.selected_dst, Some(idx), &ep.name);
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                if ui.button("接続").clicked() {
+                    if let Some((src, dst)) = self.selected_pair() {
+                        match self.midi_graph.connect(&src, &dst) {
+                            Ok(_) => self.status = Some("接続しました".to_string()),
+                            Err(e) => self.status = Some(format!("接続に失敗しました: {}", e)),
+                        }
+                    }
+                }
+                if ui.button("切断").clicked() {
+                    if let Some((src, dst)) = self.selected_pair() {
+                        match self.midi_graph.disconnect(&src, &dst) {
+                            Ok(_) => self.status = Some("切断しました".to_string()),
+                            Err(e) => self.status = Some(format!("切断に失敗しました: {}", e)),
+                        }
+                    }
+                }
+            });
+
+            if let Some(status) = &self.status {
+                ui.label(status);
             }
         });
 

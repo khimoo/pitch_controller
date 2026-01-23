@@ -23,12 +23,24 @@
           buildInputs = with pkgs; [
             portmidi
             SDL2
+            alsa-lib
+            fontconfig
+            ipafont
             pkg-config
           ];
 
           nativeBuildInputs = with pkgs; [
             pkg-config
+            makeWrapper
           ];
+
+          postFixup = ''
+            wrapProgram $out/bin/pitch_controller \
+              --set FONTCONFIG_FILE ${pkgs.fontconfig.out}/etc/fonts/fonts.conf \
+              --set FONTCONFIG_PATH ${pkgs.fontconfig.out}/etc/fonts \
+              --set PITCH_CONTROLLER_FONT ${pkgs.ipafont}/share/fonts/opentype/ipag.ttf \
+              --prefix XDG_DATA_DIRS :${pkgs.ipafont}/share
+          '';
         };
 
         packages.default = self.packages.${system}.pitch_controller;
@@ -45,8 +57,15 @@
             rust-bin.stable.latest.default
             portmidi
             SDL2
+            alsa-lib
+            fontconfig
+            ipafont
             pkg-config
           ];
+
+          shellHook = ''
+            export PITCH_CONTROLLER_FONT=${pkgs.ipafont}/share/fonts/opentype/ipag.ttf
+          '';
         };
       }
     );

@@ -4,6 +4,10 @@
 
 [![Pitch Controller Demo](https://img.youtube.com/vi/xuWjXmqUC6k/0.jpg)](https://youtu.be/xuWjXmqUC6k)
 
+## 対応環境
+
+NixがインストールされたLinux
+
 ## Usage
 
 1. コントローラーをPCに接続
